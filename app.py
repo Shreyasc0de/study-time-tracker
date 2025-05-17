@@ -1,128 +1,168 @@
-
 import streamlit as st
+import sqlite3
 import pandas as pd
-import os
 from datetime import datetime, timedelta
-import json
+import hashlib
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(input_password, stored_hash):
+    return hash_password(input_password) == stored_hash
 
 
+# Connect to SQLite
+conn = sqlite3.connect("users.db", check_same_thread=False)
+cursor = conn.cursor()
 
-# Load or initialize data
-def load_data():
-    
-    if os.path.exists("study_log.csv"):
-        return pd.read_csv("study_log.csv")
-    else:
-        return pd.DataFrame(columns=["Date", "Subject", "Hours", "Tag", "Note"])
-    
+# Create table for study logs
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS study_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT,
+    date TEXT,
+    subject TEXT,
+    hours REAL,
+    tag TEXT,
+    note TEXT
+)
+""")
+conn.commit()
 
-def save_data(df):
-    df.to_csv("study_log.csv", index=False)
+# === LOGIN SECTION ===
+st.title("📚 Study Time Tracker - User Login")
 
-import json  # Make sure this is at the top with other imports
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.username = ""
 
-STREAK_FILE = "streak.json"
+auth_mode = st.selectbox("Choose mode", ["Login", "Register"])
 
-def update_goal_streak(week_total, goal):
-    today = datetime.today().date()
-    week_id = today.strftime("%Y-%W")  # Year-week format like '2025-20'
-
-    if os.path.exists(STREAK_FILE):
-        with open(STREAK_FILE, "r") as f:
-            streak_data = json.load(f)
-    else:
-        streak_data = {"streak": 0, "last_week": "", "weeks": {}}
-
-    if week_id not in streak_data["weeks"]:
-        if week_total >= goal:
-            streak_data["streak"] += 1
+if auth_mode == "Register":
+    new_user = st.text_input("Create username")
+    new_pass = st.text_input("Create password", type="password")
+    if st.button("Register"):
+        if new_user and new_pass:
+            try:
+                cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (new_user, hash_password(new_pass)))
+                conn.commit()
+                st.success("Account created! Please log in.")
+            except sqlite3.IntegrityError:
+                st.error("Username already exists.")
         else:
-            streak_data["streak"] = 0  # reset
-        streak_data["weeks"][week_id] = week_total
-        streak_data["last_week"] = week_id
+            st.warning("Please fill out both fields.")
 
-        with open(STREAK_FILE, "w") as f:
-            json.dump(streak_data, f)
-
-    return streak_data["streak"]
-
-
-
-GOAL_FILE = "weekly_goal.json"
-
-def load_weekly_goal():
-    if os.path.exists(GOAL_FILE):
-        with open(GOAL_FILE, "r") as f:
-            return json.load(f).get("goal", 10.0)
-    return 10.0
-
-def save_weekly_goal(goal):
-    with open(GOAL_FILE, "w") as f:
-        json.dump({"goal": goal}, f)
+elif auth_mode == "Login":
+    username_input = st.text_input("Username")
+    password_input = st.text_input("Password", type="password")
+    if st.button("Login"):
+        cursor.execute("SELECT password FROM users WHERE username = ?", (username_input,))
+        result = cursor.fetchone()
+        if result and verify_password(password_input, result[0]):
+            st.session_state.logged_in = True
+            st.session_state.username = username_input
+            st.success(f"Welcome, {username_input}!")
+        else:
+            st.error("Invalid credentials.")
+    st.stop()
 
 
+username = st.session_state.username
+st.sidebar.success(f"Logged in as {username}")
 
-# App title
-st.title("📚 Study Time Tracker")
+# === APP UI AFTER LOGIN ===
 
-df= load_data()
-# Weekly Goal Tracker
-st.subheader("🎯 Weekly Goal Tracker")
-saved_goal = load_weekly_goal()
-weekly_goal = st.number_input("Set your weekly goal (in hours)", min_value=1.0, step=1.0, value=saved_goal, key="goal_input")
+def load_user_data(username):
+    query = "SELECT * FROM study_logs WHERE username = ?"
+    return pd.read_sql(query, conn, params=(username,))
 
-if weekly_goal != saved_goal:
-    save_weekly_goal(weekly_goal)
+def add_study_entry(username, date, subject, hours, tag, note):
+    cursor.execute(
+        "INSERT INTO study_logs (username, date, subject, hours, tag, note) VALUES (?, ?, ?, ?, ?, ?)",
+        (username, date, subject, hours, tag, note)
+    )
+    conn.commit()
 
+# === Study Entry Form ===
+st.subheader("➕ Add Study Session")
 
-# Filter this week's data
-today = datetime.today().date()
-start_of_week = today - timedelta(days=today.weekday())  # Monday
-df["Date"] = pd.to_datetime(df["Date"]).dt.date
-this_week = df[df["Date"] >= start_of_week]
-
-# Sum hours
-weekly_total = this_week["Hours"].sum()
-
-streak = update_goal_streak(weekly_total, weekly_goal)
-st.success(f"🔥 Weekly Streak: {streak} week(s) in a row hitting your goal!")
-
-# Progress display
-st.write(f"Hours studied this week: **{weekly_total:.2f} / {weekly_goal:.2f}**")
-progress = min(weekly_total / weekly_goal, 1.0)
-st.progress(progress)
-
-
-# Input form
 with st.form("entry_form"):
     date = st.date_input("Date")
     subject = st.selectbox("Subject", ["Math", "Science", "History", "English", "Other"])
     hours = st.number_input("Hours Spent", min_value=0.0, format="%.2f")
     tag = st.selectbox("Tag", ["Exam Prep", "Reading", "Homework", "Other"])
     note = st.text_input("Optional Note")
-
     submitted = st.form_submit_button("Add Entry")
+
     if submitted:
-        df = load_data()
-        new_entry = {"Date": date, "Subject": subject, "Hours": hours, "Tag": tag, "Note": note}
-        df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
-        save_data(df)
+        add_study_entry(username, date, subject, hours, tag, note)
         st.success("Entry added successfully!")
 
+# === Load User's Data ===
+df = load_user_data(username)
+df["date"] = pd.to_datetime(df["date"])
+
+# === Weekly Progress Tracker ===
+st.subheader("🎯 Weekly Goal Tracker")
+weekly_goal = st.number_input("Set your weekly goal (hours)", min_value=1.0, step=1.0, value=10.0)
+
+today = datetime.today().date()
+start_of_week = today - timedelta(days=today.weekday())
+this_week = df[df["date"].dt.date >= start_of_week]
+weekly_total = this_week["hours"].sum()
+
+st.write(f"Hours studied this week: **{weekly_total:.2f} / {weekly_goal:.2f}**")
+st.progress(min(weekly_total / weekly_goal, 1.0))
+
+# === Daily Chart ===
 st.subheader("📅 Daily Study Breakdown (This Week)")
 if not this_week.empty:
-    daily_hours = this_week.groupby("Date")["Hours"].sum()
+    daily_hours = this_week.groupby("date")["hours"].sum()
     st.bar_chart(daily_hours)
-else:
-    st.info("No study sessions logged this week yet.")
 
+  # Create user credentials table
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password TEXT
+)
+""")
+conn.commit()
+  
 
-# Display data
-df = load_data()
-st.subheader("📈 Hours Studied by Subject")
-if not df.empty:
-    chart_data = df.groupby("Subject")["Hours"].sum()
-    st.bar_chart(chart_data)
-
-st.subheader("🗂️ Session Log")
+# === Full Log Table ===
+st.subheader("📋 Your Study Log")
 st.dataframe(df)
+
+st.markdown("### ✏️ Edit or Delete Entries")
+
+if not df.empty:
+    selected_id = st.selectbox("Select an entry to modify", df["id"])
+    entry = df[df["id"] == selected_id].iloc[0]
+
+    with st.form("edit_form"):
+        edit_date = st.date_input("Edit Date", value=pd.to_datetime(entry["date"]))
+        edit_subject = st.selectbox("Edit Subject", ["Math", "Science", "History", "English", "Other"], index=["Math", "Science", "History", "English", "Other"].index(entry["subject"]))
+        edit_hours = st.number_input("Edit Hours", min_value=0.0, value=float(entry["hours"]))
+        edit_tag = st.selectbox("Edit Tag", ["Exam Prep", "Reading", "Homework", "Other"], index=["Exam Prep", "Reading", "Homework", "Other"].index(entry["tag"]))
+        edit_note = st.text_input("Edit Note", value=entry["note"])
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.form_submit_button("Update Entry"):
+                cursor.execute("""
+                    UPDATE study_logs SET date = ?, subject = ?, hours = ?, tag = ?, note = ?
+                    WHERE id = ? AND username = ?
+                """, (edit_date, edit_subject, edit_hours, edit_tag, edit_note, selected_id, username))
+                conn.commit()
+                st.success("Entry updated successfully!")
+                st.experimental_rerun()
+        with col2:
+            if st.form_submit_button("Delete Entry"):
+                cursor.execute("DELETE FROM study_logs WHERE id = ? AND username = ?", (selected_id, username))
+                conn.commit()
+                st.warning("Entry deleted.")
+                st.experimental_rerun()
+
+
