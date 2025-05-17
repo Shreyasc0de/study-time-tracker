@@ -4,13 +4,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 import hashlib
 
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def verify_password(input_password, stored_hash):
-    return hash_password(input_password) == stored_hash
-
-
 # Connect to SQLite
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -27,44 +20,67 @@ CREATE TABLE IF NOT EXISTS study_logs (
     note TEXT
 )
 """)
+
+# Create table for user credentials
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password TEXT
+)
+""")
+
 conn.commit()
 
-# === LOGIN SECTION ===
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(input_password, stored_hash):
+    return hash_password(input_password) == stored_hash
+
 st.title("📚 Study Time Tracker - User Login")
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = ""
 
-auth_mode = st.selectbox("Choose mode", ["Login", "Register"])
+if not st.session_state.logged_in:
+    auth_mode = st.selectbox("Choose mode", ["Login", "Register"])
 
-if auth_mode == "Register":
-    new_user = st.text_input("Create username")
-    new_pass = st.text_input("Create password", type="password")
-    if st.button("Register"):
-        if new_user and new_pass:
-            try:
-                cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (new_user, hash_password(new_pass)))
-                conn.commit()
-                st.success("Account created! Please log in.")
-            except sqlite3.IntegrityError:
-                st.error("Username already exists.")
-        else:
-            st.warning("Please fill out both fields.")
+    if auth_mode == "Register":
+        new_user = st.text_input("Create username")
+        new_pass = st.text_input("Create password", type="password")
+        if st.button("Register"):
+            if new_user and new_pass:
+                try:
+                    cursor.execute(
+                        "INSERT INTO users (username, password) VALUES (?, ?)",
+                        (new_user, hash_password(new_pass))
+                    )
+                    conn.commit()
+                    st.success("Account created! Please log in.")
+                    st.stop()
+                except sqlite3.IntegrityError:
+                    st.error("Username already exists.")
+            else:
+                st.warning("Please fill out both fields.")
+        st.stop()  # ✅ ← Make sure this is here too!
 
-elif auth_mode == "Login":
-    username_input = st.text_input("Username")
-    password_input = st.text_input("Password", type="password")
-    if st.button("Login"):
-        cursor.execute("SELECT password FROM users WHERE username = ?", (username_input,))
-        result = cursor.fetchone()
-        if result and verify_password(password_input, result[0]):
-            st.session_state.logged_in = True
-            st.session_state.username = username_input
-            st.success(f"Welcome, {username_input}!")
-        else:
-            st.error("Invalid credentials.")
-    st.stop()
+    elif auth_mode == "Login":
+        username_input = st.text_input("Username")
+        password_input = st.text_input("Password", type="password")
+        if st.button("Login"):
+            cursor.execute("SELECT password FROM users WHERE username = ?", (username_input,))
+            result = cursor.fetchone()
+            if result and verify_password(password_input, result[0]):
+                st.session_state.logged_in = True
+                st.session_state.username = username_input
+                st.success(f"Welcome, {username_input}!")
+                st.rerun()
+
+            else:
+                st.error("Invalid credentials.")
+        st.stop()  # ✅ stop showing dashboard if not logged in
 
 
 username = st.session_state.username
@@ -157,12 +173,14 @@ if not df.empty:
                 """, (edit_date, edit_subject, edit_hours, edit_tag, edit_note, selected_id, username))
                 conn.commit()
                 st.success("Entry updated successfully!")
-                st.experimental_rerun()
+                st.rerun()
+
         with col2:
             if st.form_submit_button("Delete Entry"):
                 cursor.execute("DELETE FROM study_logs WHERE id = ? AND username = ?", (selected_id, username))
                 conn.commit()
                 st.warning("Entry deleted.")
-                st.experimental_rerun()
+                st.rerun()
+
 
 
